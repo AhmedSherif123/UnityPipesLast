@@ -17,7 +17,7 @@ public class GyroCompassSplit : MonoBehaviour
     public bool useLandscapeLeft = true;
 
     [Header("Jitter Filter")]
-    public float rotationThreshold = 2.5f; // ⭐ minimum degrees to apply rotation
+    public float rotationThreshold; // ⭐ minimum degrees to apply rotation
 
     private Quaternion lastGyroRotation = Quaternion.identity;
     private bool sensorsReady = false;
