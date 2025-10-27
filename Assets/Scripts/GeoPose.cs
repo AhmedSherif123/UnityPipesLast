@@ -3,6 +3,7 @@ using UnityEngine.UI;
 using TMPro;
 using Esri.HPFramework;
 using System.Collections;
+using Unity.Mathematics;
 
 public class GyroCompassSplit : MonoBehaviour
 {
@@ -99,7 +100,8 @@ public class GyroCompassSplit : MonoBehaviour
 
             float correctedYaw = smoothedCompassHeading;
             Quaternion fusedRotation = Quaternion.Euler(pitch, correctedYaw, roll);
-
+            Quaternion yaxis = Quaternion.Euler(0, correctedYaw, 0);
+            mypos.UniverseRotation = yaxis;
             // ⭐ Threshold check
          float angleDiff = Quaternion.Angle(lastAppliedRotation, fusedRotation);
             if (angleDiff >= rotationThreshold) {
@@ -120,6 +122,7 @@ public class GyroCompassSplit : MonoBehaviour
     private void LateUpdate()
     {
         UpdateFPS();
+        
     }
 
     private float GetCompassHeading()

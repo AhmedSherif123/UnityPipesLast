@@ -6,235 +6,178 @@ using UnityEngine.Rendering;
 
 namespace Esri.ArcGISMapsSDK.Renderer.Renderables
 {
-    internal class RenderableProvider : IRenderableProvider
-    {
-        private readonly Dictionary<GameObject, IRenderable> gameObjectToRenderableMap = new();
-        private readonly Dictionary<uint, IRenderable> activeRenderables = new();
-        private readonly List<IRenderable> freeRenderables = new();
+	internal class RenderableProvider : IRenderableProvider
+	{
+		private readonly Dictionary<GameObject, IRenderable> gameObjectToRenderableMap = new();
+		private readonly Dictionary<uint, IRenderable> activeRenderables = new();
+		private readonly List<IRenderable> freeRenderables = new();
 
-        private bool areMeshCollidersEnabled = false;
+		private bool areMeshCollidersEnabled = false;
+		private readonly GameObject unused = null;
+		private readonly GameObject parent;
 
-        private readonly GameObject unused = null;
-        private readonly GameObject parent;
+		// Map runtime layer IDs (the unpredictable numbers) -> sequential small indexes (0,1,2,...)
+		private readonly Dictionary<uint, uint> runtimeToSequentialLayerMap = new();
+		private uint nextSequentialLayerIndex = 0;
 
-        // Keep track of per-layer parents
-        private readonly Dictionary<uint, GameObject> layerParents = new();
-        private readonly Dictionary<uint, string> layerNames = new();
-        private readonly Dictionary<uint, int> layerIndices = new();
+		public IReadOnlyDictionary<uint, IRenderable> Renderables => activeRenderables;
 
-        // ✅ Map original ArcGIS layer IDs to sequential IDs
-        private readonly Dictionary<uint, uint> sequentialLayerIdMap = new();
-        private uint nextSequentialLayerId = 1;
+		public bool AreMeshCollidersEnabled
+		{
+			get => areMeshCollidersEnabled;
+			set
+			{
+				if (areMeshCollidersEnabled != value)
+				{
+					areMeshCollidersEnabled = value;
 
-        public IReadOnlyDictionary<uint, IRenderable> Renderables => activeRenderables;
+					foreach (var activeRenderable in activeRenderables.Values)
+					{
+						activeRenderable.IsMeshColliderEnabled = value;
+					}
+				}
+			}
+		}
 
-        public bool AreMeshCollidersEnabled
-        {
-            get => areMeshCollidersEnabled;
-            set
-            {
-                if (areMeshCollidersEnabled != value)
-                {
-                    areMeshCollidersEnabled = value;
-                    foreach (var activeRenderable in activeRenderables)
-                    {
-                        activeRenderable.Value.IsMeshColliderEnabled = value;
-                    }
-                }
-            }
-        }
+		public IEnumerable<IRenderable> TerrainMaskingMeshes =>
+			Renderables.Values.Where(sc => sc.IsVisible && sc.MaskTerrain);
 
-        public IEnumerable<IRenderable> TerrainMaskingMeshes =>
-            Renderables.Values.Where(sc => sc.IsVisible && sc.MaskTerrain);
+		public RenderableProvider(int initSize, GameObject parent, bool areMeshCollidersEnabled)
+		{
+			this.parent = parent;
+			this.areMeshCollidersEnabled = areMeshCollidersEnabled;
 
-        public RenderableProvider(int initSize, GameObject parent, bool areMeshCollidersEnabled)
-        {
-            this.parent = parent;
-            this.areMeshCollidersEnabled = areMeshCollidersEnabled;
+			unused = new GameObject("UnusedPoolGOs")
+			{
+				hideFlags = HideFlags.DontSaveInEditor
+			};
+			unused.transform.SetParent(parent.transform, false);
 
-            // Pool container
-            unused = new GameObject("UnusedPoolGOs")
-            {
-                hideFlags = HideFlags.None // show in hierarchy
-            };
-            unused.transform.SetParent(parent.transform, false);
+			for (var i = 0; i < initSize; i++)
+			{
+				var renderable = new Renderable(CreateGameObject(i));
+				renderable.RenderableGameObject.transform.SetParent(unused.transform, false);
+				freeRenderables.Add(renderable);
+			}
+		}
 
-            for (var i = 0; i < initSize; i++)
-            {
-                var renderable = new Renderable(CreateGameObject(i));
-                renderable.RenderableGameObject.transform.SetParent(unused.transform, false);
-                freeRenderables.Add(renderable);
-            }
-        }
+		// 'layerId' parameter is the runtime layer id from Esri. We'll map it to a sequential id.
+		public IRenderable CreateRenderable(uint id, uint layerId)
+		{
+			IRenderable renderable;
 
-        /// <summary>
-        /// Register metadata for a layer (called when a new ArcGISLayer is added).
-        /// Assign sequential internal layer IDs.
-        /// </summary>
-        public void RegisterLayer(uint originalLayerId, string layerName, int layerIndex)
-        {
-            if (!sequentialLayerIdMap.ContainsKey(originalLayerId))
-            {
-                sequentialLayerIdMap[originalLayerId] = nextSequentialLayerId++;
-            }
+			if (freeRenderables.Count > 0)
+			{
+				renderable = freeRenderables[0];
+				renderable.IsVisible = false;
+				freeRenderables.RemoveAt(0);
+			}
+			else
+			{
+				renderable = new Renderable(CreateGameObject(activeRenderables.Count + freeRenderables.Count));
+			}
 
-            if (!layerNames.ContainsKey(originalLayerId))
-            {
-                layerNames[originalLayerId] = layerName;
-                layerIndices[originalLayerId] = layerIndex;
-            }
-        }
+			// Map runtime layerId -> sequential index (0,1,2,...)
+			if (!runtimeToSequentialLayerMap.TryGetValue(layerId, out var sequentialLayerId))
+			{
+				sequentialLayerId = nextSequentialLayerIndex;
+				runtimeToSequentialLayerMap[layerId] = sequentialLayerId;
+				nextSequentialLayerIndex++;
+			}
 
-        public IRenderable CreateRenderable(uint id, uint originalLayerId)
-        {
-            IRenderable renderable;
+			renderable.RenderableGameObject.transform.SetParent(parent.transform, false);
+			renderable.IsMeshColliderEnabled = areMeshCollidersEnabled;
+			renderable.Name = $"Layer_{sequentialLayerId}_Renderable_{id}";
+			renderable.LayerId = sequentialLayerId;
 
-            if (freeRenderables.Count > 0)
-            {
-                renderable = freeRenderables[0];
-                renderable.IsVisible = false;
-                freeRenderables.RemoveAt(0);
-            }
-            else
-            {
-                renderable = new Renderable(
-                    CreateGameObject(
-                        activeRenderables.Count + freeRenderables.Count,
-                        $"Layer_{originalLayerId}_Renderable_{id}"
-                    )
-                );
-            }
+			// ✅ Set Unity Layer
+			if (layerId > 0)
+			{
+				// Set to ARView layer (index 3)
+				renderable.RenderableGameObject.layer = 3;
+			}
+			else
+			{
+				// Default layer
+				renderable.RenderableGameObject.layer = 0;
+			}
 
-            // ✅ Translate original ArcGIS layer ID to sequential ID
-            if (!sequentialLayerIdMap.TryGetValue(originalLayerId, out uint sequentialId))
-            {
-                sequentialId = nextSequentialLayerId++;
-                sequentialLayerIdMap[originalLayerId] = sequentialId;
-            }
+			activeRenderables.Add(id, renderable);
+			gameObjectToRenderableMap.Add(renderable.RenderableGameObject, renderable);
 
-            // Figure out a safe name for the layer
-            string safeLayerName = $"Layer_{sequentialId}";
-            if (layerNames.TryGetValue(originalLayerId, out var lname) && !string.IsNullOrEmpty(lname))
-            {
-                safeLayerName = lname;
-            }
-            else if (layerIndices.TryGetValue(originalLayerId, out var lindex))
-            {
-                safeLayerName = $"Layer_{lindex}";
-            }
+			return renderable;
+		}
 
-            // Make sure this layer has a parent node in hierarchy
-            if (!layerParents.TryGetValue(sequentialId, out var layerParent))
-            {
-                layerParent = new GameObject(safeLayerName)
-                {
-                    hideFlags = HideFlags.None
-                };
-                layerParent.transform.SetParent(parent.transform, false);
-                layerParents[sequentialId] = layerParent;
-            }
+		public void DestroyRenderable(uint id)
+		{
+			if (!activeRenderables.TryGetValue(id, out var activeRenderable))
+				return;
 
-            renderable.RenderableGameObject.transform.SetParent(layerParent.transform, false);
-            renderable.IsMeshColliderEnabled = areMeshCollidersEnabled;
+			activeRenderable.RenderableGameObject.transform.SetParent(unused.transform, false);
+			activeRenderable.IsVisible = false;
+			activeRenderable.Mesh = null;
 
-            // Assign a descriptive name
-            renderable.Name = $"{safeLayerName}_Renderable_{id}";
-            renderable.LayerId = sequentialId;
+			gameObjectToRenderableMap.Remove(activeRenderable.RenderableGameObject);
+			activeRenderables.Remove(id);
+			freeRenderables.Add(activeRenderable);
+		}
 
-            // Basemap = layerId 0, everything else goes to Unity layer 3
-            if (sequentialId > 1)
-            {
-                renderable.RenderableGameObject.layer = 3;
-            }
+		public void Release()
+		{
+			foreach (var activeRenderable in activeRenderables.Values)
+			{
+				activeRenderable.Destroy();
+			}
 
-            activeRenderables.Add(id, renderable);
-            gameObjectToRenderableMap.Add(renderable.RenderableGameObject, renderable);
+			foreach (var freeRenderable in freeRenderables)
+			{
+				freeRenderable.Destroy();
+			}
 
-            return renderable;
-        }
+			activeRenderables.Clear();
+			freeRenderables.Clear();
 
-        public void DestroyRenderable(uint id)
-        {
-            var activeRenderable = activeRenderables[id];
+			if (unused)
+			{
+				if (Application.isEditor)
+				{
+					Object.DestroyImmediate(unused);
+				}
+				else
+				{
+					Object.Destroy(unused);
+				}
+			}
 
-            activeRenderable.RenderableGameObject.transform.SetParent(unused.transform, false);
-            activeRenderable.IsVisible = false;
-            activeRenderable.Mesh = null;
+			// clear mapping and reset sequence
+			runtimeToSequentialLayerMap.Clear();
+			nextSequentialLayerIndex = 0;
+		}
 
-            gameObjectToRenderableMap.Remove(activeRenderable.RenderableGameObject);
-            activeRenderables.Remove(id);
-            freeRenderables.Add(activeRenderable);
-        }
+		private static GameObject CreateGameObject(int id)
+		{
+			var gameObject = new GameObject("ArcGISGameObject" + id)
+			{
+				hideFlags = HideFlags.None
+			};
+			gameObject.SetActive(true);
 
-        public void Release()
-        {
-            foreach (var activeRenderable in activeRenderables)
-            {
-                activeRenderable.Value.Destroy();
-            }
+			var renderer = gameObject.AddComponent<MeshRenderer>();
+			renderer.shadowCastingMode = ShadowCastingMode.TwoSided;
+			renderer.enabled = true;
 
-            foreach (var freeRenderable in freeRenderables)
-            {
-                freeRenderable.Destroy();
-            }
+			gameObject.AddComponent<MeshFilter>();
+			gameObject.AddComponent<HPTransform>();
+			gameObject.AddComponent<MeshCollider>();
+			gameObject.GetComponent<MeshCollider>().enabled = true;
 
-            activeRenderables.Clear();
-            freeRenderables.Clear();
+			return gameObject;
+		}
 
-            if (unused)
-            {
-                if (Application.isEditor)
-                {
-                    Object.DestroyImmediate(unused);
-                }
-                else
-                {
-                    Object.Destroy(unused);
-                }
-            }
-
-            foreach (var kv in layerParents)
-            {
-                if (kv.Value)
-                {
-                    if (Application.isEditor)
-                        Object.DestroyImmediate(kv.Value);
-                    else
-                        Object.Destroy(kv.Value);
-                }
-            }
-
-            layerParents.Clear();
-            sequentialLayerIdMap.Clear();
-            nextSequentialLayerId = 1;
-        }
-
-        private static GameObject CreateGameObject(int id, string customName = null)
-        {
-            string goName = string.IsNullOrEmpty(customName) ? $"ArcGISGameObject_{id}" : customName;
-
-            var gameObject = new GameObject(goName)
-            {
-                hideFlags = HideFlags.None // show in hierarchy
-            };
-
-            gameObject.SetActive(false);
-
-            var renderer = gameObject.AddComponent<MeshRenderer>();
-            renderer.shadowCastingMode = ShadowCastingMode.TwoSided;
-            renderer.enabled = true;
-
-            gameObject.AddComponent<MeshFilter>();
-            gameObject.AddComponent<HPTransform>();
-            gameObject.AddComponent<MeshCollider>();
-
-            return gameObject;
-        }
-
-        public IRenderable GetRenderableFrom(GameObject gameObject)
-        {
-            gameObjectToRenderableMap.TryGetValue(gameObject, out var renderable);
-            return renderable;
-        }
-    }
+		public IRenderable GetRenderableFrom(GameObject gameObject)
+		{
+			gameObjectToRenderableMap.TryGetValue(gameObject, out var renderable);
+			return renderable;
+		}
+	}
 }

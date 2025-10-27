@@ -6,7 +6,7 @@ public class PinchZoomDetector : MonoBehaviour
     [SerializeField] private HPTransform CamPos;
 
     public  const double MinAltitude = 5.0;
-    public const double MaxAltitude = 8880955.0;
+    public const double MaxAltitude = 11871046.0;
 
     // Speed settings
     [SerializeField] private float zoomSpeed = 0.5f;   // Zoom responsiveness
