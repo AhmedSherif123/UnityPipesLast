@@ -344,7 +344,7 @@ namespace Esri.HPFramework
         /// </summary>
         private void OnEnable()
         {
-            Assert.IsNull(m_Parent);
+           
             UpdateParentRelation();
 
             //

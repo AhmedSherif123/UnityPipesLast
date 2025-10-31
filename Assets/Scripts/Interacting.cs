@@ -1,30 +1,32 @@
-// Copyright 2022 Esri.
-// Licensed under the Apache License, Version 2.0
-
 using Esri.ArcGISMapsSDK.Components;
 using Esri.GameEngine.Geometry;
-using TMPro;
 using UnityEngine;
 using UnityEngine.InputSystem;
-
+using TMPro;
+using Esri.Unity;
+using Esri.GameEngine.Layers;
 public class ArcGISRaycast : MonoBehaviour
 {
     [Header("References")]
     public ArcGISMapComponent arcGISMapComponent;
-    [SerializeField] private TextMeshProUGUI locationText;
-    [SerializeField] private GameObject markerGO;
-    [SerializeField] private ArcGISDataFetcher dataFetcher; //- - - > the script responsible for fetching from feature layer .
+    public ArcGISDataFetcher dataFetcher;
+    public Camera cam;
+    public GameObject markerGO;
+    public TextMeshProUGUI locationText;
 
-    [Header("Sphere Raycast Settings")]
-    [SerializeField] private float sphereRadius = 0.3f;
-    [SerializeField] private float rayDistance = 200f;
-    [SerializeField] private LayerMask raycastLayers = Physics.DefaultRaycastLayers;
+    [Header("Settings")]
+    public float maxDistance = 500f;
+    public float debugDuration = 4f;
+    public LayerMask raycastLayers = Physics.DefaultRaycastLayers;
 
-    private int featureId;
+    private int featureId = -1;
     private string position;
 
     private void Awake()
     {
+        if (cam == null)
+            cam = Camera.main;
+
         if (arcGISMapComponent == null)
             arcGISMapComponent = FindFirstObjectByType<ArcGISMapComponent>();
 
@@ -36,167 +38,87 @@ public class ArcGISRaycast : MonoBehaviour
     {
 #if UNITY_EDITOR || UNITY_STANDALONE
         if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
-            StartSphereRaycast(Mouse.current.position.ReadValue());
+            HandleClick(Mouse.current.position.ReadValue());
 #elif UNITY_IOS || UNITY_ANDROID
         if (Touchscreen.current != null && Touchscreen.current.primaryTouch.press.wasPressedThisFrame)
-            StartSphereRaycast(Touchscreen.current.primaryTouch.position.ReadValue());
+            HandleClick(Touchscreen.current.primaryTouch.position.ReadValue());
 #endif
     }
 
-    private void StartSphereRaycast(Vector2 screenPosition)
+    private void HandleClick(Vector2 screenPos)
     {
-        if (Camera.main == null)
+        if (cam == null)
         {
-            Debug.LogError("[ArcGISRaycast] Main camera not found!");
+            Debug.LogError("[ArcGISRaycast] No camera assigned!");
             return;
         }
 
-        Camera cam = Camera.main;
-        screenPosition.x = Mathf.Clamp(screenPosition.x, 0, Screen.width);
-        screenPosition.y = Mathf.Clamp(screenPosition.y, 0, Screen.height);
+        // ✅ Start ray from the camera position toward the clicked screen point
+        Ray ray = cam.ScreenPointToRay(screenPos);
 
-        Ray ray = cam.ScreenPointToRay(screenPosition);
-        Debug.DrawRay(ray.origin, ray.direction * rayDistance, Color.yellow, 5f);
-
-        if (Physics.SphereCast(ray, sphereRadius, out RaycastHit hit, rayDistance, raycastLayers))
+        if (Physics.Raycast(ray, out RaycastHit hit, maxDistance, raycastLayers))
         {
-            var arcGISRaycastHit = arcGISMapComponent.GetArcGISRaycastHit(hit);
-            featureId = arcGISRaycastHit.featureId;
-           
+            // ---- Draw ray to exact hit position ----
+            Debug.DrawLine(ray.origin,  hit.point, Color.yellow, debugDuration);
 
-            if (locationText != null)
-                locationText.text = $"FeatureID: {featureId} ";
-
-            if (featureId == -1)
+            // ---- Try to get ArcGIS feature ID ----
+            featureId = -1;
+            var arcHit = arcGISMapComponent?.GetArcGISRaycastHit(hit);
+            if (arcHit.HasValue)
             {
-                Debug.LogWarning($"[ArcGISRaycast] Invalid hit or no feature ID. ==> ");
-                return;
-            }
-
-            Debug.Log($"[SphereRaycast] Hit feature {featureId} on layer ");
-            UpdateMarkerAndPosition(hit.point);
-            DrawDebugSphere(hit.point, sphereRadius, Color.green, 6f);
-
-            // ✅ Send OBJECTID_1 to the data fetcher
-            if (dataFetcher != null)
-            {
-                dataFetcher.FetchFeatureData(featureId, position);
+                featureId = arcHit.Value.featureId;
+                Debug.LogWarning($"[ArcGISRaycast] 🎯 Hit ArcGIS feature {featureId}");
             }
             else
             {
-                Debug.LogError("[ArcGISRaycast] No ArcGISDataFetcher assigned!");
+                Debug.Log($"[ArcGISRaycast] Hit collider: {hit.collider.name}");
             }
+
+            // ---- UI feedback ----
+            if (locationText)
+                locationText.text = $"FeatureID: {featureId}";
+
+            // ---- Marker placement ----
+            UpdateMarkerAndPosition(hit.point);
+            DrawDebugSphere(hit.point, 2f, Color.green);
+
+            // ---- Send to data fetcher ----
+            dataFetcher?.FetchFeatureData(featureId, position);
         }
         else
         {
-            Vector3 endpoint = ray.origin + ray.direction * rayDistance;
-            Debug.LogWarning($"[SphereRaycast] No collider hit — endpoint: {endpoint}");
-            DrawDebugSphere(endpoint, sphereRadius, Color.red, 3f);
+            // ---- Missed hit ----
+            Vector3 missEnd = ray.origin + ray.direction * maxDistance;
+            Debug.DrawRay(ray.origin, ray.direction * maxDistance, Color.red, debugDuration);
+            DrawDebugSphere(missEnd, 0.1f, Color.red);
+            Debug.Log("[ArcGISRaycast] ❌ No collider hit.");
         }
     }
 
     private void UpdateMarkerAndPosition(Vector3 hitPoint)
     {
-        var geoPosition = arcGISMapComponent.EngineToGeographic(hitPoint);
-        var location = markerGO.GetComponent<ArcGISLocationComponent>();
-
-        if (location == null)
-        {
-            Debug.LogError("[ArcGISRaycast] Marker GameObject is missing ArcGISLocationComponent!");
+        if (arcGISMapComponent == null || markerGO == null)
             return;
+
+        var geo = arcGISMapComponent.EngineToGeographic(hitPoint);
+        var markerLoc = markerGO.GetComponent<ArcGISLocationComponent>();
+
+        if (markerLoc != null)
+        {
+            markerLoc.Position = new ArcGISPoint(geo.X, geo.Y, geo.Z, geo.SpatialReference);
+            var wgs = ArcGISGeometryEngine.Project(geo, ArcGISSpatialReference.WGS84()) as ArcGISPoint;
+            position = $"Lat: {wgs.Y:0.#####}, Lon: {wgs.X:0.#####}";
         }
-
-        location.Position = new ArcGISPoint(geoPosition.X, geoPosition.Y, geoPosition.Z, geoPosition.SpatialReference);
-
-        var point = ArcGISGeometryEngine.Project(geoPosition, ArcGISSpatialReference.WGS84()) as ArcGISPoint;
-        position = $"Lat: {point.Y:0.##}  Long: {point.X:0.##}";
     }
 
-    private void DrawDebugSphere(Vector3 position, float radius, Color color, float duration)
+    private void DrawDebugSphere(Vector3 pos, float radius, Color color)
     {
-        GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        sphere.transform.position = position;
-        sphere.transform.localScale = Vector3.one * radius * 2;
-        sphere.GetComponent<Collider>().enabled = false;
-
-        var mat = new Material(Shader.Find("Unlit/Color")) { color = color };
-        sphere.GetComponent<MeshRenderer>().material = mat;
-        Destroy(sphere, duration);
+        GameObject s = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        s.transform.position = pos;
+        s.transform.localScale = Vector3.one * radius ;
+        s.GetComponent<Collider>().enabled = false;
+        s.GetComponent<MeshRenderer>().material = new Material(Shader.Find("Unlit/Color")) { color = color };
+        s.layer = 3;
+        Destroy(s, debugDuration);
     }
 }
-
-
-
-
-
-/*using UnityEngine;
-using TMPro;
-
-public class Interacting : MonoBehaviour
-{
-    [SerializeField] private ButtonScripts bs; // Assign in Inspector
-    public float length = 100f;
-    [SerializeField] private SoundEffects effects; // Should contain AudioClip[] audiolist
-    [SerializeField] private AudioSource source;
-
-    void Start()
-    {
-        if (bs == null)
-        {
-            bs = GetComponent<ButtonScripts>();
-            if (bs == null)
-                Debug.LogWarning("ButtonScripts reference is missing! Assign it in the Inspector.");
-        }
-
-        if (effects == null)
-        {
-            effects = GetComponent<SoundEffects>();
-            if (effects == null)
-                Debug.LogWarning("SoundEffects reference is missing! Assign it in the Inspector.");
-        }
-
-        if (source == null)
-        {
-            source = GetComponent<AudioSource>();
-            if (source == null)
-                Debug.LogWarning("AudioSource is missing! Add one to this GameObject.");
-        }
-    }
-
-    void Update()
-    {
-        if (Input.GetMouseButtonDown(0))
-        {
-            Debug.Log("MOUSE CLICKED");
-
-            Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-            if (Physics.Raycast(ray, out RaycastHit hit, length))
-            {
-                string hitName = hit.transform.name;
-
-                if (bs != null && bs.text != null)
-                    bs.text.text = hitName;
-
-                AudioClip clip = System.Array.Find(effects.audiolist, c => c.name == hitName);
-
-                if (clip != null && source != null)
-                {
-                    source.clip = clip;
-                    source.Play();
-                    Debug.Log($"Playing sound: {clip.name}");
-                }
-                else
-                {
-                    Debug.LogWarning($"No audio clip found with name '{hitName}'");
-                }
-
-                Debug.Log($"HIT: {hitName} | Hit origin: {ray.origin}");
-            }
-            else
-            {
-                Debug.Log("Hit Nothing");
-            }
-        }
-    }
-}
-*/

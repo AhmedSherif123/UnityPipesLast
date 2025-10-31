@@ -479,7 +479,7 @@ namespace Esri.ArcGISMapsSDK.Components
 			{
 				rendererComponentGameObject = new GameObject("ArcGISRenderer")
 				{
-					hideFlags = HideFlags.HideAndDontSave
+					hideFlags = HideFlags.HideInInspector
 				};
 				rendererComponentGameObject.transform.SetParent(transform, false);
 
@@ -510,6 +510,7 @@ namespace Esri.ArcGISMapsSDK.Components
 
 			if (rendererComponentGameObject)
 			{
+				//This will show the instantiated objects in the scene .
 				rendererComponentGameObject.SetActive(true);
 			}
 
@@ -1685,12 +1686,14 @@ namespace Esri.ArcGISMapsSDK.Components
 
 				if (renderable != null)
 				{
+				  // - - - This part search for the layer that holds this type of mesh . :(
 					output.featureIndex = Physics.RaycastHelpers.GetFeatureIndexByTriangleIndex(raycastHit.collider.gameObject, raycastHit.triangleIndex);
 					output.layer = View.Map?.FindLayerById(renderable.LayerId);
-
+                  
+				  // - - - This parts in the texture holds the featureID in texels (Pixels) in the texture , which holds the attribute we want. UUUGGGGGHHHHHHHHHHHH
 					if (renderable.Material.NativeMaterial.HasTexture("_FeatureIds"))
 					{
-						// gets the feature ID
+						// gets the feature ID using texture data ?? :/
 						var featureIds = (Texture2D)renderable.Material.NativeMaterial.GetTexture("_FeatureIds");
 
 						var width = featureIds.width;
